@@ -7,48 +7,57 @@
     body, html {
       margin: 0; padding: 0; height: 100vh; width: 100vw; background: black;
       display: flex; justify-content: center; align-items: center;
+      flex-direction: column;
+      color: white;
     }
     video {
       width: 100vw; height: 100vh; object-fit: contain;
       background: black;
     }
+    button {
+      position: absolute;
+      top: 20px;
+      z-index: 10;
+      padding: 10px 20px;
+      font-size: 18px;
+      cursor: pointer;
+    }
   </style>
 </head>
 <body>
+  <button id="startBroadcastBtn" style="display:none;">Start Broadcast</button>
   <video id="video" autoplay playsinline></video>
 
   <script>
     (async () => {
-      const signalingUrl = 'wss://sharescreenserver-toum.onrender.com'; // <<< REPLACE THIS
+      const signalingUrl = 'wss://your-render-url'; // <<< REPLACE THIS
       const ws = new WebSocket(signalingUrl);
       const video = document.getElementById('video');
+      const startBroadcastBtn = document.getElementById('startBroadcastBtn');
       const params = new URLSearchParams(window.location.search);
       const role = params.get('role'); // 'broadcaster' or 'viewer'
       const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
       let clientId = null;
       let localStream = null;
-
-      // Broadcaster stores a peerConnection per viewer:
-      const peerConnections = {}; // key = viewerId, value = RTCPeerConnection
-
-      // Viewer has just one peerConnection:
+      const peerConnections = {};
       let peerConnection = null;
       let pendingCandidates = [];
 
       ws.onopen = () => {
         console.log('[WS] Connected');
-        ws.send(JSON.stringify({ type: role })); // announce role
+        ws.send(JSON.stringify({ type: role }));
       };
 
       ws.onmessage = async (event) => {
         const data = JSON.parse(event.data);
-        // The server should send your own id after connect
+
         if (data.type === 'id') {
           clientId = data.id;
           console.log('[WS] Assigned client id:', clientId);
           if (role === 'broadcaster') {
-            await startBroadcast();
+            // Show button for user to start screen share
+            startBroadcastBtn.style.display = 'block';
           } else if (role === 'viewer') {
             startViewing();
           }
@@ -62,21 +71,17 @@
             const viewerId = data.id;
             console.log('[Broadcaster] New viewer:', viewerId);
 
-            // Create peer connection for this viewer
             const pc = new RTCPeerConnection(config);
             peerConnections[viewerId] = pc;
 
-            // Add tracks from screen share
             localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
-            // Send ICE candidates to this viewer
             pc.onicecandidate = e => {
               if (e.candidate) {
                 ws.send(JSON.stringify({ type: 'candidate', candidate: e.candidate, to: viewerId, from: clientId }));
               }
             };
 
-            // Create offer and send to viewer
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
 
@@ -110,7 +115,6 @@
 
             await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: data.sdp }));
 
-            // Add queued ICE candidates if any
             for (const c of pendingCandidates) {
               try {
                 await peerConnection.addIceCandidate(c);
@@ -143,15 +147,16 @@
         }
       };
 
-      async function startBroadcast() {
+      startBroadcastBtn.onclick = async () => {
         try {
           localStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
           video.srcObject = localStream;
           console.log('[Broadcaster] Screen sharing started');
+          startBroadcastBtn.style.display = 'none';
         } catch (err) {
           alert('Failed to share screen: ' + err.message);
         }
-      }
+      };
 
       function createPeerConnection() {
         peerConnection = new RTCPeerConnection(config);
