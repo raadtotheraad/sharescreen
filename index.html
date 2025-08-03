@@ -25,12 +25,12 @@
   </style>
 </head>
 <body>
-  <button id="startBroadcastBtn" style="display:none;">Start Broadcast</button>
+  <button id="startBroadcastBtn" style="display:block;">Start Broadcast</button>
   <video id="video" autoplay playsinline></video>
 
   <script>
     (async () => {
-      const signalingUrl = 'wss://your-render-url'; // <<< REPLACE THIS
+      const signalingUrl = 'wss://sharescreenserver-toum.onrender.com'; // <<< REPLACE THIS
       const ws = new WebSocket(signalingUrl);
       const video = document.getElementById('video');
       const startBroadcastBtn = document.getElementById('startBroadcastBtn');
