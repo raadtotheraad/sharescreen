@@ -48,7 +48,7 @@
   <video id="video" autoplay playsinline></video>
 
   <script>
-    const signalingUrl = 'wss://sharescreenserver-toum.onrender.com'; // Replace this
+    const signalingUrl = 'wss://sharescreenserver-toum.onrender.com';
     const ws = new WebSocket(signalingUrl);
     const video = document.getElementById('video');
     const startBtn = document.getElementById('startBroadcastBtn');
@@ -61,15 +61,17 @@
     let peerConnection;
     let localStream;
     let pendingCandidates = [];
+    const pendingCandidatesMap = {}; // viewerId => candidate[]
 
     ws.onopen = () => {
       console.log('[WS] Connected');
+
       if (role === 'broadcaster') {
         startBtn.style.display = 'block';
         startBtn.onclick = async () => {
-          ws.send(JSON.stringify({ type: 'broadcaster', from: clientId }));
           startBtn.style.display = 'none';
           await startBroadcast();
+          ws.send(JSON.stringify({ type: 'broadcaster', from: clientId }));
         };
       } else if (role === 'viewer') {
         ws.send(JSON.stringify({ type: 'viewer', from: clientId }));
@@ -115,13 +117,32 @@
           if (peerConnection) {
             await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
             console.log('[Broadcaster] Set remote description from viewer:', data.from);
+
+            // Apply any queued candidates now
+            const queued = pendingCandidatesMap[data.from] || [];
+            for (const c of queued) {
+              try {
+                await peerConnection.addIceCandidate(c);
+              } catch (e) {
+                console.error('Broadcaster failed to add queued ICE candidate:', e);
+              }
+            }
+            delete pendingCandidatesMap[data.from];
           }
         } else if (data.type === 'candidate') {
           if (peerConnection) {
-            try {
-              await peerConnection.addIceCandidate(data.candidate);
-            } catch (e) {
-              console.error('Broadcaster failed to add ICE candidate:', e);
+            if (peerConnection.remoteDescription) {
+              try {
+                await peerConnection.addIceCandidate(data.candidate);
+              } catch (e) {
+                console.error('Broadcaster failed to add ICE candidate:', e);
+              }
+            } else {
+              // Queue until SDP is set
+              if (!pendingCandidatesMap[data.from]) {
+                pendingCandidatesMap[data.from] = [];
+              }
+              pendingCandidatesMap[data.from].push(data.candidate);
             }
           }
         }
@@ -138,7 +159,7 @@
             try {
               await peerConnection.addIceCandidate(c);
             } catch (e) {
-              console.error('Failed to add queued candidate', e);
+              console.error('Viewer failed to add queued ICE candidate:', e);
             }
           }
           pendingCandidates = [];
@@ -159,7 +180,7 @@
             try {
               await peerConnection.addIceCandidate(candidate);
             } catch (e) {
-              console.error('Failed to add ICE candidate:', e);
+              console.error('Viewer failed to add ICE candidate:', e);
             }
           } else {
             pendingCandidates.push(candidate);
