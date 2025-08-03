@@ -4,61 +4,60 @@
   <meta charset="UTF-8" />
   <title>Screen Share</title>
   <style>
-    * { box-sizing: border-box; }
-
     html, body {
       margin: 0;
       padding: 0;
-      height: 100vh;
       background: black;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      font-family: sans-serif;
-    }
-
-    #video {
       width: 100vw;
       height: 100vh;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    video {
+      width: 100%;
+      height: 100%;
       object-fit: contain;
-      display: none;
+      background: black;
     }
 
     #startBroadcastBtn {
       position: absolute;
-      padding: 1rem 2rem;
-      font-size: 1.2rem;
-      background: #ff3b3b;
+      z-index: 2;
+      padding: 16px 32px;
+      font-size: 1.2em;
       color: white;
+      background: red;
       border: none;
-      border-radius: 1.5rem;
+      border-radius: 10px;
       cursor: pointer;
-      box-shadow: 0 0 20px rgba(255, 59, 59, 0.4);
-      animation: pulseRed 1.5s infinite ease-in-out;
-      z-index: 10;
+      animation: pulse 1.5s infinite;
     }
 
-    @keyframes pulseRed {
-      0%   { transform: scale(1); box-shadow: 0 0 20px rgba(255, 59, 59, 0.4); }
-      50%  { transform: scale(1.05); box-shadow: 0 0 30px rgba(255, 59, 59, 0.8); }
-      100% { transform: scale(1); box-shadow: 0 0 20px rgba(255, 59, 59, 0.4); }
+    @keyframes pulse {
+      0% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.05); opacity: 0.8; }
+      100% { transform: scale(1); opacity: 1; }
     }
   </style>
 </head>
 <body>
-  <video id="video" autoplay playsinline></video>
   <button id="startBroadcastBtn" style="display: none;">Start Broadcasting</button>
+  <video id="video" autoplay playsinline></video>
 
   <script>
-    const signalingUrl = 'wss://sharescreenserver-toum.onrender.com'; // your server
+    const signalingUrl = 'wss://sharescreenserver-toum.onrender.com'; // Replace this
     const ws = new WebSocket(signalingUrl);
     const video = document.getElementById('video');
-    const startBroadcastBtn = document.getElementById('startBroadcastBtn');
+    const startBtn = document.getElementById('startBroadcastBtn');
+    const urlParams = new URLSearchParams(window.location.search);
+    const role = urlParams.get('role'); // 'broadcaster' or 'viewer'
+    const clientId = Math.random().toString(36).substring(2, 9);
+    let broadcasterId = null;
 
-    const params = new URLSearchParams(window.location.search);
-    const role = params.get('role');
     const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
-
     let peerConnection;
     let localStream;
     let pendingCandidates = [];
@@ -66,12 +65,17 @@
     ws.onopen = () => {
       console.log('[WS] Connected');
       if (role === 'broadcaster') {
-        startBroadcastBtn.style.display = 'block';
+        startBtn.style.display = 'block';
+        startBtn.onclick = async () => {
+          ws.send(JSON.stringify({ type: 'broadcaster', from: clientId }));
+          startBtn.style.display = 'none';
+          await startBroadcast();
+        };
       } else if (role === 'viewer') {
-        ws.send(JSON.stringify({ type: 'viewer' }));
+        ws.send(JSON.stringify({ type: 'viewer', from: clientId }));
         startViewing();
       } else {
-        alert("Specify '?role=broadcaster' or '?role=viewer' in the URL.");
+        alert('Specify ?role=broadcaster or ?role=viewer in the URL.');
       }
     };
 
@@ -81,88 +85,115 @@
 
       if (role === 'broadcaster') {
         if (data.type === 'new-viewer') {
+          const viewerId = data.id;
+          broadcasterId = clientId;
+
+          peerConnection = new RTCPeerConnection(config);
+          localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+          peerConnection.onicecandidate = e => {
+            if (e.candidate) {
+              ws.send(JSON.stringify({
+                type: 'candidate',
+                candidate: e.candidate,
+                from: clientId,
+                to: viewerId
+              }));
+            }
+          };
+
           const offer = await peerConnection.createOffer();
           await peerConnection.setLocalDescription(offer);
-          ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
+
+          ws.send(JSON.stringify({
+            type: 'offer',
+            sdp: offer.sdp,
+            from: clientId,
+            to: viewerId
+          }));
         } else if (data.type === 'answer') {
-          await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
+          if (peerConnection) {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
+            console.log('[Broadcaster] Set remote description from viewer:', data.from);
+          }
         } else if (data.type === 'candidate') {
-          try {
-            await peerConnection.addIceCandidate(data.candidate);
-          } catch (e) {
-            console.error('Broadcaster failed to add ICE candidate:', e);
+          if (peerConnection) {
+            try {
+              await peerConnection.addIceCandidate(data.candidate);
+            } catch (e) {
+              console.error('Broadcaster failed to add ICE candidate:', e);
+            }
           }
         }
-        return;
       }
 
       if (role === 'viewer') {
         if (data.type === 'offer') {
+          broadcasterId = data.from;
           if (!peerConnection) createPeerConnection();
+
           await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: data.sdp }));
 
           for (const c of pendingCandidates) {
             try {
               await peerConnection.addIceCandidate(c);
             } catch (e) {
-              console.error('Failed to add queued candidate:', e);
+              console.error('Failed to add queued candidate', e);
             }
           }
           pendingCandidates = [];
 
           const answer = await peerConnection.createAnswer();
           await peerConnection.setLocalDescription(answer);
-          ws.send(JSON.stringify({ type: 'answer', sdp: answer.sdp }));
+
+          ws.send(JSON.stringify({
+            type: 'answer',
+            sdp: answer.sdp,
+            from: clientId,
+            to: broadcasterId
+          }));
+          console.log('[Viewer] Sent answer');
         } else if (data.type === 'candidate') {
-          if (peerConnection?.remoteDescription) {
+          const candidate = data.candidate;
+          if (peerConnection && peerConnection.remoteDescription) {
             try {
-              await peerConnection.addIceCandidate(data.candidate);
+              await peerConnection.addIceCandidate(candidate);
             } catch (e) {
               console.error('Failed to add ICE candidate:', e);
             }
           } else {
-            pendingCandidates.push(data.candidate);
+            pendingCandidates.push(candidate);
           }
         }
       }
     };
 
-    startBroadcastBtn.onclick = async () => {
+    async function startBroadcast() {
       try {
         localStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
         video.srcObject = localStream;
-        video.style.display = 'block';
-        startBroadcastBtn.style.display = 'none';
-
-        peerConnection = new RTCPeerConnection(config);
-
-        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-
-        peerConnection.onicecandidate = e => {
-          if (e.candidate) {
-            ws.send(JSON.stringify({ type: 'candidate', candidate: e.candidate }));
-          }
-        };
-
-        ws.send(JSON.stringify({ type: 'broadcaster' }));
         console.log('[Broadcaster] Screen sharing started');
       } catch (err) {
         alert('Failed to share screen: ' + err.message);
       }
-    };
+    }
 
     function createPeerConnection() {
       peerConnection = new RTCPeerConnection(config);
 
       peerConnection.ontrack = event => {
-        video.srcObject = event.streams[0];
-        video.style.display = 'block';
         console.log('[Viewer] Stream received');
+        video.srcObject = event.streams[0];
       };
 
       peerConnection.onicecandidate = e => {
-        if (e.candidate) {
-          ws.send(JSON.stringify({ type: 'candidate', candidate: e.candidate }));
+        if (e.candidate && broadcasterId) {
+          ws.send(JSON.stringify({
+            type: 'candidate',
+            candidate: e.candidate,
+            from: clientId,
+            to: broadcasterId
+          }));
         }
       };
     }
