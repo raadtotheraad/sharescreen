@@ -2,187 +2,252 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Screen Share (Broadcaster)</title>
+  <title>Screen Share</title>
   <style>
     html, body {
-      margin: 0; padding: 0;
+      margin: 0;
+      padding: 0;
       background: black;
-      color: white;
-      width: 100vw; height: 100vh;
+      width: 100vw;
+      height: 100vh;
       overflow: hidden;
       display: flex;
-      flex-direction: column;
-      align-items: center;
       justify-content: center;
-      font-family: sans-serif;
-      text-align: center;
-    }
-    button {
-      font-size: 1.5rem;
-      padding: 1rem 2rem;
-      background: #2196F3;
-      border: none;
-      border-radius: 8px;
-      cursor: pointer;
+      align-items: center;
       color: white;
-      transition: transform 0.2s, background 0.2s;
-      margin-bottom: 1rem;
+      font-family: Arial, sans-serif;
     }
-    button:hover {
-      background: #1976D2;
+
+    #container {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+      z-index: 2;
+    }
+
+    #startButton {
+      background: rgba(255, 255, 255, 0.1);
+      color: white;
+      border: 2px solid white;
+      padding: 12px 24px;
+      font-size: 18px;
+      cursor: pointer;
+      border-radius: 8px;
+      backdrop-filter: blur(0px);
+      transition: all 0.3s ease;
+    }
+
+    #startButton:hover {
+      background: rgba(255, 255, 255, 0.2);
       transform: scale(1.05);
+      backdrop-filter: blur(4px);
     }
-    .disclaimer {
-      font-size: 1rem;
-      max-width: 80%;
-      margin-top: 1rem;
-      opacity: 0.8;
+
+    #disclaimer {
+      margin-top: 20px;
+      font-size: 14px;
+      color: #ccc;
     }
-    a {
-      color: #66ccff;
-      text-decoration: underline;
-    }
+
     video {
+      position: absolute;
+      top: 0;
+      left: 0;
       width: 100%;
       height: 100%;
       object-fit: contain;
       background: black;
-      display: none;
-      flex: 1;
+      z-index: 0;
     }
   </style>
 </head>
 <body>
-  <div id="container">
-    <button id="startBtn" style="display:none;">🎥 Start Broadcast</button>
-    <p id="disclaimer" class="disclaimer" style="display:none;">
-      ⚠️ Disclaimer: Anyone with the link can view your broadcast:<br/>
-      <a href="https://raadtotheraad.github.io/sharescreen?role=viewer" target="_blank">
-        https://raadtotheraad.github.io/sharescreen?role=viewer
-      </a>
-    </p>
+  <div id="container" style="display:none;">
+    <button id="startButton">Start Broadcast</button>
+    <div id="disclaimer">
+      Anyone with the link can view your screen.<br>
+      Share this link to viewers: <br>
+      <a href="https://raadtotheraad.github.io/sharescreen?role=viewer" target="_blank" style="color:#5fc3ff;">raadtotheraad.github.io/sharescreen?role=viewer</a>
+    </div>
   </div>
+
   <video id="video" autoplay playsinline muted></video>
 
   <script>
     const signalingUrl = 'wss://sharescreenserver-toum.onrender.com';
     const ws = new WebSocket(signalingUrl);
-    const startBtn = document.getElementById('startBtn');
-    const disclaimer = document.getElementById('disclaimer');
     const video = document.getElementById('video');
+    const startButton = document.getElementById('startButton');
+    const container = document.getElementById('container');
     const urlParams = new URLSearchParams(window.location.search);
     const role = urlParams.get('role');
     const clientId = crypto.randomUUID();
+
     const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
-    let localStream = null, peerConnection = null;
-    const peerConnections = {}, pendingCandidates = [];
+    let localStream = null;
+    const peerConnections = {}; // broadcaster: viewerId -> RTCPeerConnection
+    let peerConnection = null; // viewer
+    let pendingCandidates = [];
     let broadcasterId = null;
 
     ws.onopen = () => {
       if (role === 'broadcaster') {
+        container.style.display = 'block';
         ws.send(JSON.stringify({ type: 'broadcaster', from: clientId }));
-        // Show broadcast UI
-        startBtn.style.display = '';
-        disclaimer.style.display = '';
+        startButton.onclick = startBroadcast;
       } else if (role === 'viewer') {
-        alert('This is the viewer page — please share the broadcaster link.');
         ws.send(JSON.stringify({ type: 'viewer', from: clientId }));
-        startViewer();
+        startViewing();
       } else {
-        alert('Use ?role=broadcaster or ?role=viewer in the URL');
+        alert('Missing ?role=broadcaster or ?role=viewer in URL');
       }
     };
 
     ws.onmessage = async (event) => {
       const data = JSON.parse(event.data);
+
       if (role === 'broadcaster') {
         if (data.type === 'new-viewer') {
           const viewerId = data.from;
           const pc = new RTCPeerConnection(config);
           peerConnections[viewerId] = pc;
+
           localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
           pc.onicecandidate = e => {
-            if (e.candidate) ws.send(JSON.stringify({ type:'candidate', from:clientId, to:viewerId, candidate:e.candidate }));
+            if (e.candidate) {
+              ws.send(JSON.stringify({
+                type: 'candidate',
+                from: clientId,
+                to: viewerId,
+                candidate: e.candidate
+              }));
+            }
           };
+
           const offer = await pc.createOffer();
           await pc.setLocalDescription(offer);
-          ws.send(JSON.stringify({ type:'offer', from:clientId, to:viewerId, sdp:offer.sdp }));
+
+          ws.send(JSON.stringify({
+            type: 'offer',
+            from: clientId,
+            to: viewerId,
+            sdp: offer.sdp
+          }));
         }
+
         if (data.type === 'answer') {
           const pc = peerConnections[data.from];
-          if (pc) await pc.setRemoteDescription(new RTCSessionDescription({ type:'answer', sdp:data.sdp }));
+          if (pc) {
+            await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
+          }
         }
+
         if (data.type === 'candidate') {
           const pc = peerConnections[data.from];
-          if (pc && pc.remoteDescription) await pc.addIceCandidate(data.candidate);
+          if (pc && pc.remoteDescription) {
+            await pc.addIceCandidate(data.candidate);
+          }
         }
       }
+
       if (role === 'viewer') {
         if (data.type === 'offer') {
           broadcasterId = data.from;
           if (!peerConnection) createPeerConnection();
-          await peerConnection.setRemoteDescription(new RTCSessionDescription({ type:'offer', sdp:data.sdp }));
+
+          await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: data.sdp }));
+
           for (const c of pendingCandidates) await peerConnection.addIceCandidate(c);
-          pendingCandidates.length = 0;
+          pendingCandidates = [];
+
           const answer = await peerConnection.createAnswer();
           await peerConnection.setLocalDescription(answer);
-          ws.send(JSON.stringify({ type:'answer', from:clientId, to:broadcasterId, sdp:answer.sdp }));
+
+          ws.send(JSON.stringify({
+            type: 'answer',
+            from: clientId,
+            to: broadcasterId,
+            sdp: answer.sdp
+          }));
         }
+
         if (data.type === 'candidate') {
-          if (peerConnection?.remoteDescription) await peerConnection.addIceCandidate(data.candidate);
-          else pendingCandidates.push(data.candidate);
+          if (peerConnection?.remoteDescription) {
+            await peerConnection.addIceCandidate(data.candidate);
+          } else {
+            pendingCandidates.push(data.candidate);
+          }
         }
       }
     };
 
-    startBtn.addEventListener('click', async () => {
+    async function startBroadcast() {
       try {
         localStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
         video.srcObject = localStream;
-        video.style.display = 'block';
-        startBtn.style.display = 'none';
-        disclaimer.style.display = 'none';
-        // start pixel sending
-        initiatePixelSending();
-      } catch (err) {
-        console.error('Permission denied or failed:', err);
-        alert('Screen share permission was denied.');
-      }
-    });
 
-    function initiatePixelSending() {
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      const width = 64, height = 36;
-      canvas.width = width; canvas.height = height;
-      const getPixelData = () => {
-        ctx.drawImage(video, 0, 0, width, height);
-        const img = ctx.getImageData(0, 0, width, height).data;
-        const pixels = [];
-        for (let i = 0; i < img.length; i += 4) {
-          const hex = ((1<<24) + (img[i]<<16) + (img[i+1]<<8) + img[i+2]).toString(16).slice(1);
-          pixels.push(hex);
+        // Optional pixel sampling for sending data elsewhere (e.g., to Roblox)
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        const width = 64;
+        const height = 36;
+        canvas.width = width;
+        canvas.height = height;
+
+        function getPixelData() {
+          ctx.drawImage(video, 0, 0, width, height);
+          const imgData = ctx.getImageData(0, 0, width, height);
+          const pixels = [];
+          for (let i = 0; i < imgData.data.length; i += 4) {
+            const r = imgData.data[i];
+            const g = imgData.data[i + 1];
+            const b = imgData.data[i + 2];
+            const hex = ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+            pixels.push(hex);
+          }
+          return pixels;
         }
-        return pixels;
-      };
-      setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type:'pixel-data', from:clientId, pixels: getPixelData() }));
-        }
-      }, 1000);
+
+        setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            const pixelArray = getPixelData();
+            ws.send(JSON.stringify({
+              type: 'pixel-data',
+              from: clientId,
+              pixels: pixelArray
+            }));
+          }
+        }, 1000);
+
+      } catch (err) {
+        console.error('Error starting screen share:', err);
+        alert('Permission denied or error occurred.');
+      }
     }
 
     function createPeerConnection() {
       peerConnection = new RTCPeerConnection(config);
-      peerConnection.ontrack = ev => video.srcObject = ev.streams[0];
-      peerConnection.onicecandidate = ev => {
-        if (ev.candidate && broadcasterId) {
-          ws.send(JSON.stringify({ type:'candidate', from:clientId, to:broadcasterId, candidate:ev.candidate }));
+      peerConnection.ontrack = event => {
+        const stream = event.streams[0];
+        video.srcObject = stream;
+      };
+
+      peerConnection.onicecandidate = e => {
+        if (e.candidate && broadcasterId) {
+          ws.send(JSON.stringify({
+            type: 'candidate',
+            from: clientId,
+            to: broadcasterId,
+            candidate: e.candidate
+          }));
         }
       };
     }
 
-    function startViewer() {
+    function startViewing() {
       createPeerConnection();
     }
   </script>
