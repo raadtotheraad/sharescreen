@@ -59,8 +59,10 @@
 
     const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
-    // Broadcaster: multiple connections keyed by viewer ID
+    // Broadcaster: multiple peer connections keyed by viewer ID
     const peerConnections = {};
+    const peerConnectionsPendingCandidates = {}; // <-- Added to queue ICE candidates
+
     // Viewer: single peer connection
     let peerConnection;
     let localStream;
@@ -94,6 +96,7 @@
 
           const pc = new RTCPeerConnection(config);
           peerConnections[viewerId] = pc;
+          peerConnectionsPendingCandidates[viewerId] = [];
 
           localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
@@ -113,6 +116,7 @@
             if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
               pc.close();
               delete peerConnections[viewerId];
+              delete peerConnectionsPendingCandidates[viewerId];
             }
           };
 
@@ -137,6 +141,18 @@
             try {
               await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
               console.log('[Broadcaster] Set remote description from viewer:', viewerId);
+
+              // Drain queued ICE candidates for this viewer
+              const queued = peerConnectionsPendingCandidates[viewerId] || [];
+              for (const c of queued) {
+                try {
+                  await pc.addIceCandidate(c);
+                  console.log('[Broadcaster] Added queued ICE candidate for viewer:', viewerId);
+                } catch (e) {
+                  console.error('[Broadcaster] Failed to add queued ICE candidate:', e);
+                }
+              }
+              peerConnectionsPendingCandidates[viewerId] = [];
             } catch (e) {
               console.error('[Broadcaster] Failed to set remote description:', e);
             }
@@ -146,6 +162,10 @@
         } else if (data.type === 'candidate') {
           const viewerId = data.from;
           const pc = peerConnections[viewerId];
+          if (!peerConnectionsPendingCandidates[viewerId]) {
+            peerConnectionsPendingCandidates[viewerId] = [];
+          }
+
           if (pc && pc.remoteDescription) {
             try {
               await pc.addIceCandidate(data.candidate);
@@ -154,16 +174,15 @@
               console.error('[Broadcaster] Failed to add ICE candidate:', e);
             }
           } else {
-            console.log('[Broadcaster] Ignored ICE candidate for viewer because remote description is not set yet:', viewerId);
+            console.log('[Broadcaster] Queueing ICE candidate until remote description is set:', viewerId);
+            peerConnectionsPendingCandidates[viewerId].push(data.candidate);
           }
         }
       }
 
       if (role === 'viewer') {
         // Ignore messages not addressed to this viewer
-        if (data.to !== clientId) {
-          return;
-        }
+        if (data.to !== clientId) return;
 
         if (data.type === 'offer') {
           console.log('[Viewer] Received offer from broadcaster:', data.from);
