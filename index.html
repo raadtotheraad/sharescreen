@@ -13,94 +13,96 @@
       overflow: hidden;
       font-family: Arial, sans-serif;
       color: white;
+      position: relative;
     }
-
     video {
       width: 100%;
       height: 100%;
       object-fit: contain;
       background: black;
-      z-index: 0;
     }
-
     .overlay {
       position: absolute;
       top: 50%;
       left: 50%;
       transform: translate(-50%, -50%);
       text-align: center;
-      z-index: 2;
+      z-index: 10;
       background-color: rgba(0, 0, 0, 0.5);
       padding: 30px 40px;
       border-radius: 10px;
       backdrop-filter: blur(8px);
+      font-size: 18px;
     }
-
-    .overlay h2 {
-      margin-bottom: 10px;
-    }
-
-    .disclaimer {
-      margin: 15px 0;
-      font-size: 14px;
-      color: #ccc;
-    }
-
-    .viewer-link {
-      color: #4da6ff;
-      text-decoration: none;
-      font-weight: bold;
-    }
-
-    #broadcastBtn {
-      margin-top: 15px;
-      padding: 12px 24px;
-      font-size: 16px;
-      border: none;
-      border-radius: 6px;
-      background-color: #4da6ff;
+    button#startBroadcast {
+      font-size: 20px;
+      background: transparent;
       color: white;
+      border: 2px solid white;
+      border-radius: 12px;
+      padding: 12px 28px;
       cursor: pointer;
-      transition: all 0.3s ease;
+      transition: background-color 0.3s ease, box-shadow 0.3s ease;
+      backdrop-filter: none;
     }
-
-    #broadcastBtn:hover {
-      background-color: #3399ff;
-      box-shadow: 0 0 12px rgba(77, 166, 255, 0.8);
-      backdrop-filter: blur(4px);
+    button#startBroadcast:hover {
+      background-color: rgba(255, 255, 255, 0.15);
+      box-shadow: 0 0 15px rgba(255, 255, 255, 0.4);
+      backdrop-filter: blur(5px);
     }
-
-    .checkbox-group {
-      margin-top: 10px;
-      font-size: 14px;
+    #broadcastUI {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 10;
+      text-align: center;
+      max-width: 90vw;
+      color: white;
+    }
+    #broadcastUI label {
       display: flex;
       align-items: center;
       justify-content: center;
-      gap: 8px;
+      gap: 10px;
+      font-size: 18px;
+      margin: 15px 0;
+      cursor: pointer;
     }
-
-    input[type="checkbox"] {
-      transform: scale(1.2);
+    #broadcastUI input[type="checkbox"] {
+      width: 20px;
+      height: 20px;
+      cursor: pointer;
+    }
+    #broadcastUI p {
+      font-size: 14px;
+      margin-top: 15px;
+      line-height: 1.4;
+      max-width: 350px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    #broadcastUI a {
+      color: #0af;
+      text-decoration: underline;
     }
   </style>
 </head>
 <body>
   <video id="video" autoplay playsinline muted></video>
 
-  <div class="overlay" id="uiOverlay">
-    <h2>Start Broadcasting</h2>
-    <p class="disclaimer">
-      Anyone with this link can view your screen:
-      <br />
-      <a class="viewer-link" href="https://raadtotheraad.github.io/sharescreen?role=viewer" target="_blank">
-        raadtotheraad.github.io/sharescreen?role=viewer
-      </a>
-    </p>
-    <div class="checkbox-group">
+  <!-- Overlay for viewer waiting or broadcaster UI -->
+  <div id="broadcastUI" class="overlay" style="display:none;">
+    <button id="startBroadcast">Start Broadcast</button>
+    <label>
       <input type="checkbox" id="allowRoblox" />
-      <label for="allowRoblox">Also stream to Roblox screen</label>
-    </div>
-    <button id="broadcastBtn">Start Broadcast</button>
+      Also share stream with Roblox
+    </label>
+    <p><strong>Disclaimer:</strong> Anyone with this <a href="https://raadtotheraad.github.io/sharescreen?role=viewer" target="_blank" rel="noopener noreferrer">viewer link</a> can watch your broadcast.</p>
+  </div>
+
+  <div id="viewerOverlay" class="overlay" style="display:none;">
+    Waiting for broadcaster to connect...
   </div>
 
   <script>
@@ -111,22 +113,27 @@
     const role = urlParams.get('role');
     const clientId = crypto.randomUUID();
 
-    const allowRobloxCheckbox = document.getElementById('allowRoblox');
-    const overlay = document.getElementById('uiOverlay');
-    const startBtn = document.getElementById('broadcastBtn');
-
     const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
     let localStream = null;
-    const peerConnections = {};
-    let peerConnection = null;
+    const peerConnections = {}; // broadcaster: viewerId -> RTCPeerConnection
+    let peerConnection = null; // viewer
     let pendingCandidates = [];
     let broadcasterId = null;
 
+    // UI elements
+    const broadcastUI = document.getElementById('broadcastUI');
+    const viewerOverlay = document.getElementById('viewerOverlay');
+    const startBroadcastBtn = document.getElementById('startBroadcast');
+    const allowRobloxCheckbox = document.getElementById('allowRoblox');
+
     ws.onopen = () => {
       if (role === 'broadcaster') {
-        // UI waits for click
+        ws.send(JSON.stringify({ type: 'broadcaster', from: clientId }));
+        // Show broadcast UI
+        broadcastUI.style.display = 'block';
       } else if (role === 'viewer') {
         ws.send(JSON.stringify({ type: 'viewer', from: clientId }));
+        viewerOverlay.style.display = 'block';
         startViewing();
       } else {
         alert('Missing ?role=broadcaster or ?role=viewer in URL');
@@ -212,53 +219,27 @@
       }
     };
 
-    async function startBroadcast() {
+    // Start broadcasting after clicking the button
+    startBroadcastBtn?.addEventListener('click', async () => {
       try {
+        // Request screen share stream
         localStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
         video.srcObject = localStream;
-        ws.send(JSON.stringify({ type: 'broadcaster', from: clientId }));
 
+        // Hide UI once broadcasting starts
+        broadcastUI.style.display = 'none';
+
+        // TODO: Use allowRobloxCheckbox.checked to trigger Roblox integration logic
         if (allowRobloxCheckbox.checked) {
-          const canvas = document.createElement('canvas');
-          const ctx = canvas.getContext('2d');
-          const width = 64;
-          const height = 36;
-          canvas.width = width;
-          canvas.height = height;
-
-          function getPixelData() {
-            ctx.drawImage(video, 0, 0, width, height);
-            const imgData = ctx.getImageData(0, 0, width, height);
-            const pixels = [];
-            for (let i = 0; i < imgData.data.length; i += 4) {
-              const r = imgData.data[i];
-              const g = imgData.data[i + 1];
-              const b = imgData.data[i + 2];
-              const hex = ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
-              pixels.push(hex);
-            }
-            return pixels;
-          }
-
-          setInterval(() => {
-            if (ws.readyState === WebSocket.OPEN) {
-              const pixelArray = getPixelData();
-              ws.send(JSON.stringify({
-                type: 'pixel-data',
-                from: clientId,
-                pixels: pixelArray
-              }));
-            }
-          }, 1000);
+          // For now just console log - you can implement Roblox linking here
+          console.log('User allowed Roblox to receive stream');
         }
-
-        overlay.remove(); // Hide the UI after broadcast starts
 
       } catch (err) {
         console.error('Error starting screen share:', err);
         alert('Screen share permission denied or error occurred.');
       }
-    }
+    });
 
     function createPeerConnection() {
       peerConnection = new RTCPeerConnection(config);
@@ -266,6 +247,9 @@
       peerConnection.ontrack = event => {
         const stream = event.streams[0];
         video.srcObject = stream;
+
+        // Hide viewer waiting overlay once stream arrives
+        viewerOverlay.style.display = 'none';
       };
 
       peerConnection.onicecandidate = e => {
@@ -283,7 +267,6 @@
     function startViewing() {
       createPeerConnection();
     }
-
-    startBtn?.addEventListener('click', startBroadcast);
   </script>
-</body
+</body>
+</html>
