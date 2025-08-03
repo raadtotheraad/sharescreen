@@ -2,20 +2,20 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Screen Share</title>
+  <title>Screen Share (Broadcaster)</title>
   <style>
     html, body {
-      margin: 0;
-      padding: 0;
+      margin: 0; padding: 0;
       background: black;
-      width: 100vw;
-      height: 100vh;
+      color: white;
+      width: 100vw; height: 100vh;
       overflow: hidden;
       display: flex;
+      flex-direction: column;
       align-items: center;
       justify-content: center;
-      color: white;
       font-family: sans-serif;
+      text-align: center;
     }
     button {
       font-size: 1.5rem;
@@ -25,54 +25,76 @@
       border-radius: 8px;
       cursor: pointer;
       color: white;
+      transition: transform 0.2s, background 0.2s;
+      margin-bottom: 1rem;
     }
     button:hover {
       background: #1976D2;
+      transform: scale(1.05);
+    }
+    .disclaimer {
+      font-size: 1rem;
+      max-width: 80%;
+      margin-top: 1rem;
+      opacity: 0.8;
+    }
+    a {
+      color: #66ccff;
+      text-decoration: underline;
     }
     video {
       width: 100%;
       height: 100%;
       object-fit: contain;
       background: black;
+      display: none;
+      flex: 1;
     }
   </style>
 </head>
 <body>
-  <!-- UI: Start button centered on page -->
-  <button id="startBtn">🎥 Start Screen Sharing</button>
-  <video id="video" autoplay playsinline muted style="display:none;"></video>
+  <div id="container">
+    <button id="startBtn" style="display:none;">🎥 Start Broadcast</button>
+    <p id="disclaimer" class="disclaimer" style="display:none;">
+      ⚠️ Disclaimer: Anyone with the link can view your broadcast:<br/>
+      <a href="https://raadtotheraad.github.io/sharescreen?role=viewer" target="_blank">
+        https://raadtotheraad.github.io/sharescreen?role=viewer
+      </a>
+    </p>
+  </div>
+  <video id="video" autoplay playsinline muted></video>
 
   <script>
     const signalingUrl = 'wss://sharescreenserver-toum.onrender.com';
     const ws = new WebSocket(signalingUrl);
-    const video = document.getElementById('video');
     const startBtn = document.getElementById('startBtn');
+    const disclaimer = document.getElementById('disclaimer');
+    const video = document.getElementById('video');
     const urlParams = new URLSearchParams(window.location.search);
     const role = urlParams.get('role');
     const clientId = crypto.randomUUID();
     const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
-
-    let localStream = null;
-    let peerConnection = null;
-    const peerConnections = {};
-    let pendingCandidates = [];
+    let localStream = null, peerConnection = null;
+    const peerConnections = {}, pendingCandidates = [];
     let broadcasterId = null;
 
     ws.onopen = () => {
       if (role === 'broadcaster') {
         ws.send(JSON.stringify({ type: 'broadcaster', from: clientId }));
-        // Wait for button click before requesting capture
+        // Show broadcast UI
+        startBtn.style.display = '';
+        disclaimer.style.display = '';
       } else if (role === 'viewer') {
+        alert('This is the viewer page — please share the broadcaster link.');
         ws.send(JSON.stringify({ type: 'viewer', from: clientId }));
         startViewer();
       } else {
-        alert('Missing ?role=broadcaster or ?role=viewer in URL');
+        alert('Use ?role=broadcaster or ?role=viewer in the URL');
       }
     };
 
     ws.onmessage = async (event) => {
       const data = JSON.parse(event.data);
-
       if (role === 'broadcaster') {
         if (data.type === 'new-viewer') {
           const viewerId = data.from;
@@ -80,32 +102,31 @@
           peerConnections[viewerId] = pc;
           localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
           pc.onicecandidate = e => {
-            if (e.candidate) ws.send(JSON.stringify({type:'candidate',from:clientId,to:viewerId,candidate:e.candidate}));
+            if (e.candidate) ws.send(JSON.stringify({ type:'candidate', from:clientId, to:viewerId, candidate:e.candidate }));
           };
           const offer = await pc.createOffer();
           await pc.setLocalDescription(offer);
-          ws.send(JSON.stringify({type:'offer',from:clientId,to:viewerId,sdp:offer.sdp}));
+          ws.send(JSON.stringify({ type:'offer', from:clientId, to:viewerId, sdp:offer.sdp }));
         }
         if (data.type === 'answer') {
           const pc = peerConnections[data.from];
-          if (pc) await pc.setRemoteDescription(new RTCSessionDescription({type:'answer',sdp:data.sdp}));
+          if (pc) await pc.setRemoteDescription(new RTCSessionDescription({ type:'answer', sdp:data.sdp }));
         }
         if (data.type === 'candidate') {
           const pc = peerConnections[data.from];
           if (pc && pc.remoteDescription) await pc.addIceCandidate(data.candidate);
         }
       }
-
       if (role === 'viewer') {
         if (data.type === 'offer') {
           broadcasterId = data.from;
           if (!peerConnection) createPeerConnection();
-          await peerConnection.setRemoteDescription(new RTCSessionDescription({type:'offer',sdp:data.sdp}));
+          await peerConnection.setRemoteDescription(new RTCSessionDescription({ type:'offer', sdp:data.sdp }));
           for (const c of pendingCandidates) await peerConnection.addIceCandidate(c);
-          pendingCandidates = [];
+          pendingCandidates.length = 0;
           const answer = await peerConnection.createAnswer();
           await peerConnection.setLocalDescription(answer);
-          ws.send(JSON.stringify({type:'answer',from:clientId,to:broadcasterId,sdp:answer.sdp}));
+          ws.send(JSON.stringify({ type:'answer', from:clientId, to:broadcasterId, sdp:answer.sdp }));
         }
         if (data.type === 'candidate') {
           if (peerConnection?.remoteDescription) await peerConnection.addIceCandidate(data.candidate);
@@ -114,19 +135,18 @@
       }
     };
 
-    // Show button, capture on click
     startBtn.addEventListener('click', async () => {
       try {
         localStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
         video.srcObject = localStream;
         video.style.display = 'block';
         startBtn.style.display = 'none';
+        disclaimer.style.display = 'none';
+        // start pixel sending
         initiatePixelSending();
-
-        // Continue your WebRTC logic if needed, video stream assigned
       } catch (err) {
-        console.error('Permission denied or error:', err);
-        alert('Screen share permission denied or failed.');
+        console.error('Permission denied or failed:', err);
+        alert('Screen share permission was denied.');
       }
     });
 
@@ -135,40 +155,36 @@
       const ctx = canvas.getContext('2d');
       const width = 64, height = 36;
       canvas.width = width; canvas.height = height;
-
       const getPixelData = () => {
         ctx.drawImage(video, 0, 0, width, height);
-        const imgData = ctx.getImageData(0, 0, width, height);
+        const img = ctx.getImageData(0, 0, width, height).data;
         const pixels = [];
-        for (let i = 0; i < imgData.data.length; i += 4) {
-          const hex = ((1<<24) + (imgData.data[i]<<16) + (imgData.data[i+1]<<8) + imgData.data[i+2])
-                       .toString(16).slice(1);
+        for (let i = 0; i < img.length; i += 4) {
+          const hex = ((1<<24) + (img[i]<<16) + (img[i+1]<<8) + img[i+2]).toString(16).slice(1);
           pixels.push(hex);
         }
         return pixels;
       };
-
       setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({
-            type: 'pixel-data',
-            from: clientId,
-            pixels: getPixelData()
-          }));
+          ws.send(JSON.stringify({ type:'pixel-data', from:clientId, pixels: getPixelData() }));
         }
       }, 1000);
     }
 
     function createPeerConnection() {
       peerConnection = new RTCPeerConnection(config);
-      peerConnection.ontrack = e => video.srcObject = e.streams[0];
+      peerConnection.ontrack = ev => video.srcObject = ev.streams[0];
       peerConnection.onicecandidate = ev => {
-        if (ev.candidate && broadcasterId)
-          ws.send(JSON.stringify({type:'candidate',from:clientId,to:broadcasterId,candidate:ev.candidate}));
+        if (ev.candidate && broadcasterId) {
+          ws.send(JSON.stringify({ type:'candidate', from:clientId, to:broadcasterId, candidate:ev.candidate }));
+        }
       };
     }
 
-    function startViewer() { createPeerConnection(); }
+    function startViewer() {
+      createPeerConnection();
+    }
   </script>
 </body>
 </html>
