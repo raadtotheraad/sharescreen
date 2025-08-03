@@ -86,12 +86,27 @@
       color: #0af;
       text-decoration: underline;
     }
+    #viewerOverlay {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+      z-index: 10;
+      background-color: rgba(0, 0, 0, 0.5);
+      padding: 30px 40px;
+      border-radius: 10px;
+      backdrop-filter: blur(8px);
+      font-size: 18px;
+      color: white;
+      display: none;
+    }
   </style>
 </head>
 <body>
   <video id="video" autoplay playsinline muted></video>
 
-  <!-- Overlay for viewer waiting or broadcaster UI -->
+  <!-- Broadcast UI (only on broadcaster) -->
   <div id="broadcastUI" class="overlay" style="display:none;">
     <button id="startBroadcast">Start Broadcast</button>
     <label>
@@ -101,9 +116,8 @@
     <p><strong>Disclaimer:</strong> Anyone with this <a href="https://raadtotheraad.github.io/sharescreen?role=viewer" target="_blank" rel="noopener noreferrer">viewer link</a> can watch your broadcast.</p>
   </div>
 
-  <div id="viewerOverlay" class="overlay" style="display:none;">
-    Waiting for broadcaster to connect...
-  </div>
+  <!-- Viewer waiting overlay (only on viewer) -->
+  <div id="viewerOverlay">Waiting for broadcaster to connect...</div>
 
   <script>
     const signalingUrl = 'wss://sharescreenserver-toum.onrender.com';
@@ -115,8 +129,8 @@
 
     const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
     let localStream = null;
-    const peerConnections = {}; // broadcaster: viewerId -> RTCPeerConnection
-    let peerConnection = null; // viewer
+    const peerConnections = {};
+    let peerConnection = null;
     let pendingCandidates = [];
     let broadcasterId = null;
 
@@ -129,11 +143,10 @@
     ws.onopen = () => {
       if (role === 'broadcaster') {
         ws.send(JSON.stringify({ type: 'broadcaster', from: clientId }));
-        // Show broadcast UI
-        broadcastUI.style.display = 'block';
+        broadcastUI.style.display = 'block';  // Show broadcaster UI
       } else if (role === 'viewer') {
         ws.send(JSON.stringify({ type: 'viewer', from: clientId }));
-        viewerOverlay.style.display = 'block';
+        viewerOverlay.style.display = 'block'; // Show viewer waiting UI
         startViewing();
       } else {
         alert('Missing ?role=broadcaster or ?role=viewer in URL');
@@ -219,22 +232,19 @@
       }
     };
 
-    // Start broadcasting after clicking the button
+    // Broadcaster click handler
     startBroadcastBtn?.addEventListener('click', async () => {
       try {
-        // Request screen share stream
         localStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
         video.srcObject = localStream;
 
-        // Hide UI once broadcasting starts
+        // Hide broadcast UI after starting
         broadcastUI.style.display = 'none';
 
-        // TODO: Use allowRobloxCheckbox.checked to trigger Roblox integration logic
         if (allowRobloxCheckbox.checked) {
-          // For now just console log - you can implement Roblox linking here
           console.log('User allowed Roblox to receive stream');
+          // You can hook Roblox integration here
         }
-
       } catch (err) {
         console.error('Error starting screen share:', err);
         alert('Screen share permission denied or error occurred.');
