@@ -48,7 +48,7 @@
   <video id="video" autoplay playsinline></video>
 
   <script>
-    const signalingUrl = 'wss://sharescreenserver-toum.onrender.com'; // Replace this if needed
+    const signalingUrl = 'wss://sharescreenserver-toum.onrender.com'; // Replace if needed
     const ws = new WebSocket(signalingUrl);
     const video = document.getElementById('video');
     const startBtn = document.getElementById('startBroadcastBtn');
@@ -58,6 +58,10 @@
     let broadcasterId = null;
 
     const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
+    // For broadcaster: keep track of multiple connections (one per viewer)
+    const peerConnections = {};
+    // For viewer: single peer connection
     let peerConnection;
     let localStream;
     let pendingCandidates = [];
@@ -88,10 +92,13 @@
           const viewerId = data.id;
           broadcasterId = clientId;
 
-          peerConnection = new RTCPeerConnection(config);
-          localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+          // Create a new RTCPeerConnection per viewer
+          const pc = new RTCPeerConnection(config);
+          peerConnections[viewerId] = pc;
 
-          peerConnection.onicecandidate = e => {
+          localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+          pc.onicecandidate = e => {
             if (e.candidate) {
               ws.send(JSON.stringify({
                 type: 'candidate',
@@ -102,34 +109,53 @@
             }
           };
 
-          const offer = await peerConnection.createOffer();
-          await peerConnection.setLocalDescription(offer);
+          pc.onconnectionstatechange = () => {
+            console.log(`[Broadcaster] Connection state for viewer ${viewerId}:`, pc.connectionState);
+            if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+              pc.close();
+              delete peerConnections[viewerId];
+            }
+          };
 
-          ws.send(JSON.stringify({
-            type: 'offer',
-            sdp: offer.sdp,
-            from: clientId,
-            to: viewerId
-          }));
+          try {
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+
+            ws.send(JSON.stringify({
+              type: 'offer',
+              sdp: offer.sdp,
+              from: clientId,
+              to: viewerId
+            }));
+          } catch (err) {
+            console.error('[Broadcaster] Error creating or sending offer:', err);
+          }
+
         } else if (data.type === 'answer') {
-          if (peerConnection) {
+          const viewerId = data.from;
+          const pc = peerConnections[viewerId];
+          if (pc) {
             try {
-              await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
-              console.log('[Broadcaster] Set remote description from viewer:', data.from);
+              await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
+              console.log('[Broadcaster] Set remote description from viewer:', viewerId);
             } catch (e) {
               console.error('[Broadcaster] Failed to set remote description:', e);
             }
+          } else {
+            console.warn('[Broadcaster] No peer connection found for viewer', viewerId);
           }
         } else if (data.type === 'candidate') {
-          if (peerConnection && peerConnection.remoteDescription) {
+          const viewerId = data.from;
+          const pc = peerConnections[viewerId];
+          if (pc && pc.remoteDescription) {
             try {
-              await peerConnection.addIceCandidate(data.candidate);
-              console.log('[Broadcaster] Added ICE candidate');
+              await pc.addIceCandidate(data.candidate);
+              console.log('[Broadcaster] Added ICE candidate for viewer:', viewerId);
             } catch (e) {
               console.error('[Broadcaster] Failed to add ICE candidate:', e);
             }
           } else {
-            console.log('[Broadcaster] Ignored ICE candidate because remote description is not set yet');
+            console.log('[Broadcaster] Ignored ICE candidate for viewer because remote description is not set yet:', viewerId);
           }
         }
       }
