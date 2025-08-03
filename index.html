@@ -152,7 +152,7 @@
           localStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
           video.srcObject = localStream;
           console.log('[Broadcaster] Screen sharing started');
-          startBroadcastBtn.style.display = 'none';
+          startBroadcastBtn.style.display = 'block';
         } catch (err) {
           alert('Failed to share screen: ' + err.message);
         }
