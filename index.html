@@ -13,8 +13,8 @@
       overflow: hidden;
     }
     video {
-      width: 100vw;
-      height: 100vh;
+      width: 100%;
+      height: 100%;
       object-fit: contain;
       background: black;
     }
@@ -22,19 +22,18 @@
 </head>
 <body>
   <video id="video" autoplay playsinline muted></video>
-
   <script>
     const signalingUrl = 'wss://sharescreenserver-toum.onrender.com';
     const ws = new WebSocket(signalingUrl);
     const video = document.getElementById('video');
     const urlParams = new URLSearchParams(window.location.search);
     const role = urlParams.get('role');
-    const clientId = crypto.randomUUID(); // Unique per user
+    const clientId = crypto.randomUUID();
 
     const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
-    let localStream;
-    const peerConnections = {}; // For broadcaster
-    let peerConnection; // For viewer
+    let localStream = null;
+    const peerConnections = {}; // broadcaster: viewerId -> RTCPeerConnection
+    let peerConnection = null; // viewer
     let pendingCandidates = [];
     let broadcasterId = null;
 
@@ -46,7 +45,7 @@
         ws.send(JSON.stringify({ type: 'viewer', from: clientId }));
         startViewing();
       } else {
-        console.error('Missing role parameter (?role=broadcaster or ?role=viewer)');
+        alert('Missing ?role=broadcaster or ?role=viewer in URL');
       }
     };
 
@@ -54,9 +53,8 @@
       const data = JSON.parse(event.data);
 
       if (role === 'broadcaster') {
-        const viewerId = data.from;
-
         if (data.type === 'new-viewer') {
+          const viewerId = data.from;
           const pc = new RTCPeerConnection(config);
           peerConnections[viewerId] = pc;
 
@@ -66,9 +64,9 @@
             if (e.candidate) {
               ws.send(JSON.stringify({
                 type: 'candidate',
-                candidate: e.candidate,
                 from: clientId,
-                to: viewerId
+                to: viewerId,
+                candidate: e.candidate
               }));
             }
           };
@@ -78,21 +76,21 @@
 
           ws.send(JSON.stringify({
             type: 'offer',
-            sdp: offer.sdp,
             from: clientId,
-            to: viewerId
+            to: viewerId,
+            sdp: offer.sdp
           }));
         }
 
         if (data.type === 'answer') {
-          const pc = peerConnections[viewerId];
+          const pc = peerConnections[data.from];
           if (pc) {
             await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
           }
         }
 
         if (data.type === 'candidate') {
-          const pc = peerConnections[viewerId];
+          const pc = peerConnections[data.from];
           if (pc && pc.remoteDescription) {
             await pc.addIceCandidate(data.candidate);
           }
@@ -106,9 +104,7 @@
 
           await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: data.sdp }));
 
-          for (const c of pendingCandidates) {
-            await peerConnection.addIceCandidate(c);
-          }
+          for (const c of pendingCandidates) await peerConnection.addIceCandidate(c);
           pendingCandidates = [];
 
           const answer = await peerConnection.createAnswer();
@@ -116,9 +112,9 @@
 
           ws.send(JSON.stringify({
             type: 'answer',
-            sdp: answer.sdp,
             from: clientId,
-            to: broadcasterId
+            to: broadcasterId,
+            sdp: answer.sdp
           }));
         }
 
@@ -137,7 +133,7 @@
         localStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
         video.srcObject = localStream;
       } catch (err) {
-        console.error('Screen sharing failed:', err);
+        console.error('Error starting screen share:', err);
       }
     }
 
@@ -146,19 +142,16 @@
 
       peerConnection.ontrack = event => {
         const stream = event.streams[0];
-        if (video.srcObject !== stream) {
-          video.srcObject = stream;
-          video.onloadedmetadata = () => video.play().catch(() => {});
-        }
+        video.srcObject = stream;
       };
 
       peerConnection.onicecandidate = e => {
         if (e.candidate && broadcasterId) {
           ws.send(JSON.stringify({
             type: 'candidate',
-            candidate: e.candidate,
             from: clientId,
-            to: broadcasterId
+            to: broadcasterId,
+            candidate: e.candidate
           }));
         }
       };
