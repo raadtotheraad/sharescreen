@@ -19,7 +19,7 @@
 
   <script>
     (async () => {
-      const signalingUrl = 'wss://your-render-url'; // <-- Replace this!
+      const signalingUrl = 'wss://sharescreenserver-toum.onrender.com'; // <-- Replace this if needed!
       const ws = new WebSocket(signalingUrl);
       const video = document.getElementById('video');
       const params = new URLSearchParams(window.location.search);
@@ -49,11 +49,19 @@
 
         if (role === 'broadcaster') {
           if (data.type === 'new-viewer') {
-            // When a new viewer arrives, create offer
+            // Create peerConnection if it doesn't exist yet
             if (!peerConnection) {
-              console.warn('Broadcaster currently supports one viewer only');
-              return;
+              peerConnection = new RTCPeerConnection(config);
+
+              localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+              peerConnection.onicecandidate = e => {
+                if (e.candidate) {
+                  ws.send(JSON.stringify({ type: 'candidate', candidate: e.candidate }));
+                }
+              };
             }
+
             const offer = await peerConnection.createOffer();
             await peerConnection.setLocalDescription(offer);
             ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
@@ -106,16 +114,6 @@
         try {
           localStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
           video.srcObject = localStream;
-
-          peerConnection = new RTCPeerConnection(config);
-
-          localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-
-          peerConnection.onicecandidate = e => {
-            if (e.candidate) {
-              ws.send(JSON.stringify({ type: 'candidate', candidate: e.candidate }));
-            }
-          };
 
           console.log('[Broadcaster] Screen sharing started');
         } catch (err) {
