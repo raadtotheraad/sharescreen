@@ -3,29 +3,29 @@
 <head>
   <title>Screen Share</title>
   <meta charset="UTF-8" />
+  <style>body,html{margin:0;padding:0;overflow:hidden;}video{width:100vw;height:100vh;object-fit:contain;}</style>
 </head>
-<body style="margin:0;">
-  <video id="video" autoplay playsinline style="width:100vw; height:100vh; object-fit:contain;"></video>
+<body>
+  <video id="video" autoplay playsinline></video>
 
   <script>
     window.onload = () => {
-      const ws = new WebSocket('wss://sharescreenserver-toum.onrender.com');
+      const ws = new WebSocket('wss://sharescreenserver-toum.onrender.com'); // Replace with your signaling server URL
       const video = document.getElementById('video');
       const urlParams = new URLSearchParams(window.location.search);
       const role = urlParams.get('role'); // 'broadcaster' or 'viewer'
       const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
+      // Broadcaster keeps track of connections by viewer ID
+      const peerConnections = {};
       let localStream;
-      let peerConnection;
-      let pendingCandidates = [];
 
       ws.onopen = () => {
         console.log('[WS] Connected');
+        ws.send(JSON.stringify({ type: role }));
         if (role === 'broadcaster') {
-          ws.send(JSON.stringify({ type: 'broadcaster' }));
           startBroadcast();
         } else {
-          ws.send(JSON.stringify({ type: 'viewer' }));
           startViewing();
         }
       };
@@ -36,95 +36,96 @@
 
         if (role === 'broadcaster') {
           if (data.type === 'new-viewer') {
-            // When a new viewer arrives, create peerConnection and send offer
             const viewerId = data.id;
-            if (!peerConnection) {
-              console.warn('Broadcaster: no peerConnection instance for viewers; implement multi-viewer support if needed');
-              // For multi-viewer you’d want one RTCPeerConnection per viewer.
+            console.log('[Broadcaster] New viewer connected:', viewerId);
+            createPeerConnectionForViewer(viewerId);
+          } else if (data.type === 'answer') {
+            const pc = peerConnections[data.id];
+            if (pc) {
+              await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
             }
-          }
-          if (data.type === 'answer') {
-            if (peerConnection) {
-              await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
-            }
-          }
-          if (data.type === 'candidate') {
-            if (peerConnection) {
+          } else if (data.type === 'candidate') {
+            const pc = peerConnections[data.id];
+            if (pc && data.candidate) {
               try {
-                await peerConnection.addIceCandidate(data.candidate);
+                await pc.addIceCandidate(data.candidate);
               } catch (e) {
                 console.error('Broadcaster failed to add ICE candidate:', e);
               }
             }
           }
-          return;
         }
 
-        // Viewer message handling:
-        if (data.type === 'offer') {
-          if (!peerConnection) {
-            createPeerConnection();
-          }
-          await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: data.sdp }));
+        if (role === 'viewer') {
+          if (data.type === 'offer') {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: data.sdp }));
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
 
-          // Add any queued ICE candidates now
-          for (const candidate of pendingCandidates) {
-            try {
-              await peerConnection.addIceCandidate(candidate);
-            } catch (e) {
-              console.error('Error adding queued candidate:', e);
+            ws.send(JSON.stringify({
+              type: 'answer',
+              sdp: answer.sdp,
+              id: data.id // pass the broadcaster or viewer id
+            }));
+          } else if (data.type === 'candidate') {
+            if (data.candidate) {
+              try {
+                await peerConnection.addIceCandidate(data.candidate);
+              } catch (e) {
+                console.error('Viewer failed to add ICE candidate:', e);
+              }
             }
-          }
-          pendingCandidates = [];
-
-          const answer = await peerConnection.createAnswer();
-          await peerConnection.setLocalDescription(answer);
-
-          ws.send(JSON.stringify({ type: 'answer', sdp: answer.sdp }));
-          console.log('[Viewer] Sent answer');
-        } else if (data.type === 'candidate') {
-          const candidate = data.candidate;
-          if (peerConnection && peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
-            try {
-              await peerConnection.addIceCandidate(candidate);
-            } catch (e) {
-              console.error('Failed to add ICE candidate:', e);
-            }
-          } else {
-            // Remote description not set yet, queue candidate
-            pendingCandidates.push(candidate);
           }
         }
       };
 
+      // Broadcaster functions:
       async function startBroadcast() {
         try {
           localStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
           video.srcObject = localStream;
-
-          peerConnection = new RTCPeerConnection(config);
-
-          localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-
-          peerConnection.onicecandidate = e => {
-            if (e.candidate) {
-              ws.send(JSON.stringify({ type: 'candidate', candidate: e.candidate }));
-            }
-          };
-
-          // NOTE: You’ll need to implement multi-viewer support in the signaling server and client here.
           console.log('[Broadcaster] Screen sharing started');
         } catch (err) {
           alert('Failed to share screen: ' + err.message);
         }
       }
 
-      function createPeerConnection() {
+      function createPeerConnectionForViewer(viewerId) {
+        const pc = new RTCPeerConnection(config);
+
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+        pc.onicecandidate = e => {
+          if (e.candidate) {
+            ws.send(JSON.stringify({ type: 'candidate', candidate: e.candidate, id: viewerId }));
+          }
+        };
+
+        pc.onconnectionstatechange = () => {
+          if (pc.connectionState === 'disconnected' || pc.connectionState === 'closed') {
+            delete peerConnections[viewerId];
+            console.log(`[Broadcaster] Viewer ${viewerId} disconnected`);
+          }
+        };
+
+        peerConnections[viewerId] = pc;
+
+        pc.createOffer()
+          .then(offer => pc.setLocalDescription(offer))
+          .then(() => {
+            ws.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp, id: viewerId }));
+          })
+          .catch(console.error);
+      }
+
+      // Viewer functions:
+      let peerConnection;
+      function startViewing() {
         peerConnection = new RTCPeerConnection(config);
 
         peerConnection.ontrack = event => {
-          console.log('[Viewer] Received track');
           video.srcObject = event.streams[0];
+          console.log('[Viewer] Received remote stream');
         };
 
         peerConnection.onicecandidate = e => {
@@ -132,10 +133,12 @@
             ws.send(JSON.stringify({ type: 'candidate', candidate: e.candidate }));
           }
         };
-      }
 
-      function startViewing() {
-        createPeerConnection();
+        peerConnection.onconnectionstatechange = () => {
+          if (peerConnection.connectionState === 'disconnected' || peerConnection.connectionState === 'closed') {
+            console.log('[Viewer] Disconnected from broadcaster');
+          }
+        };
       }
     };
   </script>
