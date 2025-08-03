@@ -11,6 +11,23 @@
       width: 100vw;
       height: 100vh;
       overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-family: sans-serif;
+    }
+    button {
+      font-size: 1.5rem;
+      padding: 1rem 2rem;
+      background: #2196F3;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      color: white;
+    }
+    button:hover {
+      background: #1976D2;
     }
     video {
       width: 100%;
@@ -21,29 +38,33 @@
   </style>
 </head>
 <body>
-  <video id="video" autoplay playsinline muted></video>
+  <!-- UI: Start button centered on page -->
+  <button id="startBtn">🎥 Start Screen Sharing</button>
+  <video id="video" autoplay playsinline muted style="display:none;"></video>
+
   <script>
     const signalingUrl = 'wss://sharescreenserver-toum.onrender.com';
     const ws = new WebSocket(signalingUrl);
     const video = document.getElementById('video');
+    const startBtn = document.getElementById('startBtn');
     const urlParams = new URLSearchParams(window.location.search);
     const role = urlParams.get('role');
     const clientId = crypto.randomUUID();
-
     const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
     let localStream = null;
-    const peerConnections = {}; // broadcaster: viewerId -> RTCPeerConnection
-    let peerConnection = null; // viewer
+    let peerConnection = null;
+    const peerConnections = {};
     let pendingCandidates = [];
     let broadcasterId = null;
 
     ws.onopen = () => {
       if (role === 'broadcaster') {
         ws.send(JSON.stringify({ type: 'broadcaster', from: clientId }));
-        startBroadcast();
+        // Wait for button click before requesting capture
       } else if (role === 'viewer') {
         ws.send(JSON.stringify({ type: 'viewer', from: clientId }));
-        startViewing();
+        startViewer();
       } else {
         alert('Missing ?role=broadcaster or ?role=viewer in URL');
       }
@@ -57,150 +78,97 @@
           const viewerId = data.from;
           const pc = new RTCPeerConnection(config);
           peerConnections[viewerId] = pc;
-
           localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-
           pc.onicecandidate = e => {
-            if (e.candidate) {
-              ws.send(JSON.stringify({
-                type: 'candidate',
-                from: clientId,
-                to: viewerId,
-                candidate: e.candidate
-              }));
-            }
+            if (e.candidate) ws.send(JSON.stringify({type:'candidate',from:clientId,to:viewerId,candidate:e.candidate}));
           };
-
           const offer = await pc.createOffer();
           await pc.setLocalDescription(offer);
-
-          ws.send(JSON.stringify({
-            type: 'offer',
-            from: clientId,
-            to: viewerId,
-            sdp: offer.sdp
-          }));
+          ws.send(JSON.stringify({type:'offer',from:clientId,to:viewerId,sdp:offer.sdp}));
         }
-
         if (data.type === 'answer') {
           const pc = peerConnections[data.from];
-          if (pc) {
-            await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
-          }
+          if (pc) await pc.setRemoteDescription(new RTCSessionDescription({type:'answer',sdp:data.sdp}));
         }
-
         if (data.type === 'candidate') {
           const pc = peerConnections[data.from];
-          if (pc && pc.remoteDescription) {
-            await pc.addIceCandidate(data.candidate);
-          }
+          if (pc && pc.remoteDescription) await pc.addIceCandidate(data.candidate);
         }
-
-        // You can handle pixel-data messages here if needed on broadcaster side (optional)
       }
 
       if (role === 'viewer') {
         if (data.type === 'offer') {
           broadcasterId = data.from;
           if (!peerConnection) createPeerConnection();
-
-          await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: data.sdp }));
-
+          await peerConnection.setRemoteDescription(new RTCSessionDescription({type:'offer',sdp:data.sdp}));
           for (const c of pendingCandidates) await peerConnection.addIceCandidate(c);
           pendingCandidates = [];
-
           const answer = await peerConnection.createAnswer();
           await peerConnection.setLocalDescription(answer);
-
-          ws.send(JSON.stringify({
-            type: 'answer',
-            from: clientId,
-            to: broadcasterId,
-            sdp: answer.sdp
-          }));
+          ws.send(JSON.stringify({type:'answer',from:clientId,to:broadcasterId,sdp:answer.sdp}));
         }
-
         if (data.type === 'candidate') {
-          if (peerConnection?.remoteDescription) {
-            await peerConnection.addIceCandidate(data.candidate);
-          } else {
-            pendingCandidates.push(data.candidate);
-          }
+          if (peerConnection?.remoteDescription) await peerConnection.addIceCandidate(data.candidate);
+          else pendingCandidates.push(data.candidate);
         }
-
-        // If you want to receive pixel-data here, handle it in viewer code.
       }
     };
 
-    async function startBroadcast() {
+    // Show button, capture on click
+    startBtn.addEventListener('click', async () => {
       try {
-        // Ask for screen share permission and get the stream
         localStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
         video.srcObject = localStream;
+        video.style.display = 'block';
+        startBtn.style.display = 'none';
+        initiatePixelSending();
 
-        // Create hidden canvas to extract pixels at a low resolution (64x36)
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        const width = 64;
-        const height = 36;
-        canvas.width = width;
-        canvas.height = height;
-
-        function getPixelData() {
-          ctx.drawImage(video, 0, 0, width, height);
-          const imgData = ctx.getImageData(0, 0, width, height);
-          const pixels = [];
-          for (let i = 0; i < imgData.data.length; i += 4) {
-            const r = imgData.data[i];
-            const g = imgData.data[i + 1];
-            const b = imgData.data[i + 2];
-            const hex = ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
-            pixels.push(hex);
-          }
-          return pixels;
-        }
-
-        // Send pixel data every second via WebSocket (custom message type)
-        setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) {
-            const pixelArray = getPixelData();
-            ws.send(JSON.stringify({
-              type: 'pixel-data',
-              from: clientId,
-              pixels: pixelArray
-            }));
-          }
-        }, 1000);
-
+        // Continue your WebRTC logic if needed, video stream assigned
       } catch (err) {
-        console.error('Error starting screen share:', err);
-        alert('Screen share permission denied or error occurred.');
+        console.error('Permission denied or error:', err);
+        alert('Screen share permission denied or failed.');
       }
+    });
+
+    function initiatePixelSending() {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const width = 64, height = 36;
+      canvas.width = width; canvas.height = height;
+
+      const getPixelData = () => {
+        ctx.drawImage(video, 0, 0, width, height);
+        const imgData = ctx.getImageData(0, 0, width, height);
+        const pixels = [];
+        for (let i = 0; i < imgData.data.length; i += 4) {
+          const hex = ((1<<24) + (imgData.data[i]<<16) + (imgData.data[i+1]<<8) + imgData.data[i+2])
+                       .toString(16).slice(1);
+          pixels.push(hex);
+        }
+        return pixels;
+      };
+
+      setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: 'pixel-data',
+            from: clientId,
+            pixels: getPixelData()
+          }));
+        }
+      }, 1000);
     }
 
     function createPeerConnection() {
       peerConnection = new RTCPeerConnection(config);
-
-      peerConnection.ontrack = event => {
-        const stream = event.streams[0];
-        video.srcObject = stream;
-      };
-
-      peerConnection.onicecandidate = e => {
-        if (e.candidate && broadcasterId) {
-          ws.send(JSON.stringify({
-            type: 'candidate',
-            from: clientId,
-            to: broadcasterId,
-            candidate: e.candidate
-          }));
-        }
+      peerConnection.ontrack = e => video.srcObject = e.streams[0];
+      peerConnection.onicecandidate = ev => {
+        if (ev.candidate && broadcasterId)
+          ws.send(JSON.stringify({type:'candidate',from:clientId,to:broadcasterId,candidate:ev.candidate}));
       };
     }
 
-    function startViewing() {
-      createPeerConnection();
-    }
+    function startViewer() { createPeerConnection(); }
   </script>
 </body>
 </html>
