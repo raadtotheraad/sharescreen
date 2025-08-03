@@ -57,16 +57,15 @@
     const clientId = Math.random().toString(36).substring(2, 9);
 
     const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+    let localStream;
 
-    // Broadcaster state
-    const peerConnections = {}; // viewerId => RTCPeerConnection
-    const peerConnectionsPendingCandidates = {}; // viewerId => [candidates]
+    // Broadcaster keeps multiple connections:
+    const peerConnections = {}; // viewerId -> RTCPeerConnection
 
-    // Viewer state
+    // Viewer single connection:
     let peerConnection;
     let pendingCandidates = [];
     let broadcasterId = null;
-    let localStream;
 
     ws.onopen = () => {
       console.log('[WS] Connected');
@@ -93,14 +92,14 @@
         if (data.type === 'new-viewer') {
           const viewerId = data.id;
           console.log('[Broadcaster] New viewer:', viewerId);
-          peerConnectionsPendingCandidates[viewerId] = [];
 
+          // Create new RTCPeerConnection for this viewer
           const pc = new RTCPeerConnection(config);
           peerConnections[viewerId] = pc;
 
           localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
-          pc.onicecandidate = e => {
+          pc.onicecandidate = (e) => {
             if (e.candidate) {
               ws.send(JSON.stringify({
                 type: 'candidate',
@@ -111,46 +110,36 @@
             }
           };
 
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
+          try {
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
 
-          ws.send(JSON.stringify({
-            type: 'offer',
-            sdp: offer.sdp,
-            from: clientId,
-            to: viewerId
-          }));
-        } else if (data.type === 'answer') {
-          if (data.to !== clientId) return; // Only process answers meant for me
+            ws.send(JSON.stringify({
+              type: 'offer',
+              sdp: offer.sdp,
+              from: clientId,
+              to: viewerId
+            }));
+          } catch (err) {
+            console.error('[Broadcaster] Error creating offer for viewer:', viewerId, err);
+          }
+        }
+        else if (data.type === 'answer') {
           const viewerId = data.from;
           const pc = peerConnections[viewerId];
           if (pc) {
             try {
               await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
               console.log('[Broadcaster] Set remote description from viewer:', viewerId);
-
-              // Add any queued ICE candidates for this viewer
-              const queued = peerConnectionsPendingCandidates[viewerId] || [];
-              for (const c of queued) {
-                try {
-                  await pc.addIceCandidate(c);
-                  console.log('[Broadcaster] Added queued ICE candidate for viewer:', viewerId);
-                } catch (e) {
-                  console.error('[Broadcaster] Failed to add queued ICE candidate:', e);
-                }
-              }
-              peerConnectionsPendingCandidates[viewerId] = [];
-            } catch (e) {
-              console.error('[Broadcaster] Failed to set remote description:', e);
+            } catch (err) {
+              console.error('[Broadcaster] Failed to set remote description for viewer:', viewerId, err);
             }
-          } else {
-            console.warn('[Broadcaster] No peer connection found for viewer:', viewerId);
           }
-        } else if (data.type === 'candidate') {
-          if (data.to !== clientId) return;
+        }
+        else if (data.type === 'candidate') {
           const viewerId = data.from;
           const pc = peerConnections[viewerId];
-          if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+          if (pc && pc.remoteDescription) {
             try {
               await pc.addIceCandidate(data.candidate);
               console.log('[Broadcaster] Added ICE candidate for viewer:', viewerId);
@@ -158,22 +147,14 @@
               console.error('[Broadcaster] Failed to add ICE candidate:', e);
             }
           } else {
-            console.log('[Broadcaster] Queueing ICE candidate for viewer because remote description is not set yet:', viewerId);
-            if (!peerConnectionsPendingCandidates[viewerId]) {
-              peerConnectionsPendingCandidates[viewerId] = [];
-            }
-            peerConnectionsPendingCandidates[viewerId].push(data.candidate);
+            console.log('[Broadcaster] ICE candidate received before remote description for viewer:', viewerId);
           }
         }
       }
 
       if (role === 'viewer') {
-        if (data.to !== clientId) return; // Only process messages meant for me
-
         if (data.type === 'offer') {
-          console.log('[Viewer] Received offer from broadcaster:', data.from);
           broadcasterId = data.from;
-
           if (!peerConnection) createPeerConnection();
 
           try {
@@ -208,18 +189,18 @@
           } catch (err) {
             console.error('[Viewer] Error during answer creation or sending:', err);
           }
-        } else if (data.type === 'candidate') {
-          const candidate = data.candidate;
-          if (peerConnection && peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
+        }
+        else if (data.type === 'candidate') {
+          if (peerConnection && peerConnection.remoteDescription) {
             try {
-              await peerConnection.addIceCandidate(candidate);
+              await peerConnection.addIceCandidate(data.candidate);
               console.log('[Viewer] Added ICE candidate');
             } catch (e) {
               console.error('[Viewer] Failed to add ICE candidate:', e);
             }
           } else {
             console.log('[Viewer] Queueing ICE candidate until remote description is set');
-            pendingCandidates.push(candidate);
+            pendingCandidates.push(data.candidate);
           }
         }
       }
@@ -241,7 +222,7 @@
       peerConnection.ontrack = event => {
         console.log('[Viewer] Stream received', event.streams);
         video.srcObject = event.streams[0];
-        video.muted = true; // mute to avoid autoplay block
+        video.muted = true;
         video.play().catch(e => console.warn('[Viewer] Autoplay blocked:', e));
       };
 
