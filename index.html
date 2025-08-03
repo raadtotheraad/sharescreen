@@ -95,6 +95,8 @@
             await pc.addIceCandidate(data.candidate);
           }
         }
+
+        // You can handle pixel-data messages here if needed on broadcaster side (optional)
       }
 
       if (role === 'viewer') {
@@ -125,6 +127,8 @@
             pendingCandidates.push(data.candidate);
           }
         }
+
+        // If you want to receive pixel-data here, handle it in viewer code.
       }
     };
 
@@ -134,7 +138,7 @@
         localStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
         video.srcObject = localStream;
 
-        // Create hidden canvas to extract pixels
+        // Create hidden canvas to extract pixels at a low resolution (64x36)
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
         const width = 64;
@@ -156,12 +160,10 @@
           return pixels;
         }
 
-        // Send pixel data every second via WebSocket
+        // Send pixel data every second via WebSocket (custom message type)
         setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) {
             const pixelArray = getPixelData();
-
-            // Send pixel data with a custom type 'pixel-data'
             ws.send(JSON.stringify({
               type: 'pixel-data',
               from: clientId,
