@@ -130,10 +130,49 @@
 
     async function startBroadcast() {
       try {
+        // Ask for screen share permission and get the stream
         localStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
         video.srcObject = localStream;
+
+        // Create hidden canvas to extract pixels
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        const width = 64;
+        const height = 36;
+        canvas.width = width;
+        canvas.height = height;
+
+        function getPixelData() {
+          ctx.drawImage(video, 0, 0, width, height);
+          const imgData = ctx.getImageData(0, 0, width, height);
+          const pixels = [];
+          for (let i = 0; i < imgData.data.length; i += 4) {
+            const r = imgData.data[i];
+            const g = imgData.data[i + 1];
+            const b = imgData.data[i + 2];
+            const hex = ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+            pixels.push(hex);
+          }
+          return pixels;
+        }
+
+        // Send pixel data every second via WebSocket
+        setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            const pixelArray = getPixelData();
+
+            // Send pixel data with a custom type 'pixel-data'
+            ws.send(JSON.stringify({
+              type: 'pixel-data',
+              from: clientId,
+              pixels: pixelArray
+            }));
+          }
+        }, 1000);
+
       } catch (err) {
         console.error('Error starting screen share:', err);
+        alert('Screen share permission denied or error occurred.');
       }
     }
 
