@@ -11,9 +11,8 @@
       width: 100vw;
       height: 100vh;
       overflow: hidden;
-      font-family: Arial, sans-serif;
       color: white;
-      position: relative;
+      font-family: Arial, sans-serif;
     }
     video {
       width: 100%;
@@ -21,141 +20,104 @@
       object-fit: contain;
       background: black;
     }
-    .overlay {
+    #ui {
       position: absolute;
       top: 50%;
       left: 50%;
       transform: translate(-50%, -50%);
       text-align: center;
-      z-index: 10;
-      background-color: rgba(0, 0, 0, 0.5);
-      padding: 30px 40px;
-      border-radius: 10px;
-      backdrop-filter: blur(8px);
-      font-size: 18px;
-    }
-    button#startBroadcast {
-      font-size: 20px;
-      background: transparent;
-      color: white;
-      border: 2px solid white;
+      background: rgba(0, 0, 0, 0.7);
+      padding: 20px 30px;
       border-radius: 12px;
-      padding: 12px 28px;
-      cursor: pointer;
-      transition: background-color 0.3s ease, box-shadow 0.3s ease;
-      backdrop-filter: none;
-    }
-    button#startBroadcast:hover {
-      background-color: rgba(255, 255, 255, 0.15);
-      box-shadow: 0 0 15px rgba(255, 255, 255, 0.4);
       backdrop-filter: blur(5px);
     }
-    #broadcastUI {
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      z-index: 10;
-      text-align: center;
-      max-width: 90vw;
-      color: white;
-    }
-    #broadcastUI label {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 10px;
+    #broadcastBtn {
+      background: #1e90ff;
+      border: none;
+      padding: 15px 40px;
       font-size: 18px;
-      margin: 15px 0;
+      font-weight: bold;
+      color: white;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.3s ease, transform 0.3s ease;
+      margin-bottom: 15px;
+    }
+    #broadcastBtn:hover {
+      background: #63b3ff;
+      transform: scale(1.05);
+      backdrop-filter: blur(8px);
+    }
+    label {
+      font-size: 16px;
+      display: block;
+      cursor: pointer;
+      user-select: none;
+      margin-bottom: 10px;
+    }
+    input[type="checkbox"] {
+      margin-right: 10px;
+      transform: scale(1.3);
+      vertical-align: middle;
       cursor: pointer;
     }
-    #broadcastUI input[type="checkbox"] {
-      width: 20px;
-      height: 20px;
-      cursor: pointer;
+    a {
+      color: #63b3ff;
+      text-decoration: none;
     }
-    #broadcastUI p {
-      font-size: 14px;
-      margin-top: 15px;
-      line-height: 1.4;
-      max-width: 350px;
-      margin-left: auto;
-      margin-right: auto;
-    }
-    #broadcastUI a {
-      color: #0af;
+    a:hover {
       text-decoration: underline;
     }
-    #viewerOverlay {
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      text-align: center;
-      z-index: 10;
-      background-color: rgba(0, 0, 0, 0.5);
-      padding: 30px 40px;
-      border-radius: 10px;
-      backdrop-filter: blur(8px);
-      font-size: 18px;
-      color: white;
-      display: none;
+    #disclaimer {
+      margin-top: 12px;
+      font-size: 14px;
+      color: #ccc;
     }
   </style>
 </head>
 <body>
   <video id="video" autoplay playsinline muted></video>
 
-  <!-- Broadcast UI (only on broadcaster) -->
-  <div id="broadcastUI" class="overlay" style="display:none;">
-    <button id="startBroadcast">Start Broadcast</button>
+  <div id="ui">
+    <button id="broadcastBtn">Start Broadcast</button>
     <label>
-      <input type="checkbox" id="allowRoblox" />
-      Also share stream with Roblox
+      <input type="checkbox" id="robloxStream" />
+      Also stream to Roblox
     </label>
-    <p><strong>Disclaimer:</strong> Anyone with this <a href="https://raadtotheraad.github.io/sharescreen?role=viewer" target="_blank" rel="noopener noreferrer">viewer link</a> can watch your broadcast.</p>
+    <div id="disclaimer">
+      Anyone with this link can watch your broadcast:<br/>
+      <a href="https://raadtotheraad.github.io/sharescreen?role=viewer" target="_blank" rel="noopener noreferrer">
+        https://raadtotheraad.github.io/sharescreen?role=viewer
+      </a>
+    </div>
   </div>
-
-  <!-- Viewer waiting overlay (only on viewer) -->
-  <div id="viewerOverlay">Waiting for broadcaster to connect...</div>
 
   <script>
     const signalingUrl = 'wss://sharescreenserver-toum.onrender.com';
     const ws = new WebSocket(signalingUrl);
     const video = document.getElementById('video');
+    const ui = document.getElementById('ui');
+    const broadcastBtn = document.getElementById('broadcastBtn');
+    const robloxCheckbox = document.getElementById('robloxStream');
     const urlParams = new URLSearchParams(window.location.search);
     const role = urlParams.get('role');
     const clientId = crypto.randomUUID();
 
     const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
     let localStream = null;
-    const peerConnections = {};
-    let peerConnection = null;
-    let pendingCandidates = [];
-    let broadcasterId = null;
-
-    // UI elements
-    const broadcastUI = document.getElementById('broadcastUI');
-    const viewerOverlay = document.getElementById('viewerOverlay');
-    const startBroadcastBtn = document.getElementById('startBroadcast');
-    const allowRobloxCheckbox = document.getElementById('allowRoblox');
+    const peerConnections = {}; // broadcaster: viewerId -> RTCPeerConnection
 
     ws.onopen = () => {
       if (role === 'broadcaster') {
         ws.send(JSON.stringify({ type: 'broadcaster', from: clientId }));
-        broadcastUI.style.display = 'block';  // Show broadcaster UI
-      } else if (role === 'viewer') {
-        ws.send(JSON.stringify({ type: 'viewer', from: clientId }));
-        viewerOverlay.style.display = 'block'; // Show viewer waiting UI
-        startViewing();
+        // Wait for user to click start broadcast
       } else {
-        alert('Missing ?role=broadcaster or ?role=viewer in URL');
+        alert('This page is for broadcasters only. Use ?role=broadcaster in URL.');
       }
     };
 
     ws.onmessage = async (event) => {
       const data = JSON.parse(event.data);
-
       if (role === 'broadcaster') {
         if (data.type === 'new-viewer') {
           const viewerId = data.from;
@@ -200,82 +162,59 @@
           }
         }
       }
-
-      if (role === 'viewer') {
-        if (data.type === 'offer') {
-          broadcasterId = data.from;
-          if (!peerConnection) createPeerConnection();
-
-          await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: data.sdp }));
-
-          for (const c of pendingCandidates) await peerConnection.addIceCandidate(c);
-          pendingCandidates = [];
-
-          const answer = await peerConnection.createAnswer();
-          await peerConnection.setLocalDescription(answer);
-
-          ws.send(JSON.stringify({
-            type: 'answer',
-            from: clientId,
-            to: broadcasterId,
-            sdp: answer.sdp
-          }));
-        }
-
-        if (data.type === 'candidate') {
-          if (peerConnection?.remoteDescription) {
-            await peerConnection.addIceCandidate(data.candidate);
-          } else {
-            pendingCandidates.push(data.candidate);
-          }
-        }
-      }
     };
 
-    // Broadcaster click handler
-    startBroadcastBtn?.addEventListener('click', async () => {
+    broadcastBtn.onclick = async () => {
+      broadcastBtn.disabled = true;
+      broadcastBtn.textContent = 'Starting Broadcast...';
+
       try {
         localStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
         video.srcObject = localStream;
 
-        // Hide broadcast UI after starting
-        broadcastUI.style.display = 'none';
+        // Hide UI once broadcasting starts
+        ui.style.display = 'none';
 
-        if (allowRobloxCheckbox.checked) {
-          console.log('User allowed Roblox to receive stream');
-          // You can hook Roblox integration here
+        // If Roblox streaming is enabled, start sending pixel data:
+        if (robloxCheckbox.checked) {
+          startSendingPixelData();
         }
       } catch (err) {
-        console.error('Error starting screen share:', err);
         alert('Screen share permission denied or error occurred.');
+        console.error('Error starting screen share:', err);
+        broadcastBtn.disabled = false;
+        broadcastBtn.textContent = 'Start Broadcast';
       }
-    });
+    };
 
-    function createPeerConnection() {
-      peerConnection = new RTCPeerConnection(config);
+    function startSendingPixelData() {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const width = 64;
+      const height = 36;
+      canvas.width = width;
+      canvas.height = height;
 
-      peerConnection.ontrack = event => {
-        const stream = event.streams[0];
-        video.srcObject = stream;
-
-        // Hide viewer waiting overlay once stream arrives
-        viewerOverlay.style.display = 'none';
-      };
-
-      peerConnection.onicecandidate = e => {
-        if (e.candidate && broadcasterId) {
-          ws.send(JSON.stringify({
-            type: 'candidate',
-            from: clientId,
-            to: broadcasterId,
-            candidate: e.candidate
-          }));
+      function sendPixels() {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        ctx.drawImage(video, 0, 0, width, height);
+        const imgData = ctx.getImageData(0, 0, width, height);
+        const pixels = [];
+        for (let i = 0; i < imgData.data.length; i += 4) {
+          const r = imgData.data[i];
+          const g = imgData.data[i + 1];
+          const b = imgData.data[i + 2];
+          const hex = ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+          pixels.push(hex);
         }
-      };
-    }
+        ws.send(JSON.stringify({
+          type: 'pixel-data',
+          from: clientId,
+          pixels
+        }));
+      }
 
-    function startViewing() {
-      createPeerConnection();
+      setInterval(sendPixels, 1000);
     }
   </script>
 </body>
