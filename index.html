@@ -59,9 +59,9 @@
 
     const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
-    // For broadcaster: keep track of multiple connections (one per viewer)
+    // Broadcaster: multiple connections keyed by viewer ID
     const peerConnections = {};
-    // For viewer: single peer connection
+    // Viewer: single peer connection
     let peerConnection;
     let localStream;
     let pendingCandidates = [];
@@ -92,7 +92,6 @@
           const viewerId = data.id;
           broadcasterId = clientId;
 
-          // Create a new RTCPeerConnection per viewer
           const pc = new RTCPeerConnection(config);
           peerConnections[viewerId] = pc;
 
@@ -161,6 +160,11 @@
       }
 
       if (role === 'viewer') {
+        // Ignore messages not addressed to this viewer
+        if (data.to !== clientId) {
+          return;
+        }
+
         if (data.type === 'offer') {
           console.log('[Viewer] Received offer from broadcaster:', data.from);
           broadcasterId = data.from;
